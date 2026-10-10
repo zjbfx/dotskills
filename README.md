@@ -38,9 +38,10 @@ needs the entry.
 
 ## Skills (currently shipping)
 
-| Name | Platforms |
-| --- | --- |
-| `i-have-adhd` | win, linux (adapted from https://github.com/ayghri/i-have-adhd) |
+| Name | Platforms | Source |
+| --- | --- | --- |
+| `i-have-adhd` | win, linux | https://github.com/ayghri/i-have-adhd |
+| `powershell-expert` | win | https://github.com/hmohamed01/powershell-expert |
 
 ## Usage
 
