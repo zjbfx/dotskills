@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """dotskills installer.
 
-Symlinks (default) or copies every skill under skills/<name>/SKILL.md into
-the Claude Code skills directory so the harness discovers them on the next
-launch. Cross-platform: handles Windows symlink quirks via `mklink /D`.
+Skills are organized by platform under skills/<platform>/<name>/SKILL.md.
+On install, only the current platform's skills are linked (or copied) into
+Claude Code's skills directory, so a single repo can carry Windows and
+Linux variants side by side.
 
 Usage:
-    python install.py                       # link all skills to ~/.claude/skills
-    python install.py my-skill another      # link only the named skills
-    python install.py --copy                # copy instead of symlink
-    python install.py --path <dir>          # install into <dir> instead of ~/.claude/skills
-    python install.py --uninstall [names]   # remove installed skills
-    python install.py --list                # print discovered skills and exit
+    python install.py                       install all current-platform skills
+    python install.py my-skill another      install only the named skills
+    python install.py --copy                copy instead of symlink
+    python install.py --path <dir>          install into <dir> instead of ~/.claude/skills
+    python install.py --platform <p>        act as if running on platform p (win|linux)
+    python install.py --uninstall [names]   remove installed skills
+    python install.py --list                list current-platform skills
     python install.py --help
 """
 
@@ -27,6 +29,9 @@ SKILLS_DIR = REPO_ROOT / "skills"
 DEFAULT_TARGET = Path.home() / ".claude" / "skills"
 
 IS_WINDOWS = os.name == "nt"
+PLATFORM_WIN = "win"
+PLATFORM_LINUX = "linux"
+SUPPORTED_PLATFORMS = (PLATFORM_WIN, PLATFORM_LINUX)
 
 # Force UTF-8 I/O so error messages from Windows system calls (which arrive
 # in the system codepage) render correctly regardless of the terminal.
@@ -66,10 +71,19 @@ def error(msg: str) -> None:
     print(f"{colorize('xx', RED)} {msg}", file=sys.stderr)
 
 
-def discover_skills() -> list[Path]:
-    if not SKILLS_DIR.is_dir():
+def current_platform() -> str:
+    return PLATFORM_WIN if IS_WINDOWS else PLATFORM_LINUX
+
+
+def platform_skills_dir(platform: str) -> Path:
+    return SKILLS_DIR / platform
+
+
+def discover_skills(platform: str) -> list[Path]:
+    d = platform_skills_dir(platform)
+    if not d.is_dir():
         return []
-    return sorted(p for p in SKILLS_DIR.iterdir() if (p / "SKILL.md").is_file())
+    return sorted(p for p in d.iterdir() if (p / "SKILL.md").is_file())
 
 
 def read_skill_name(skill_dir: Path) -> str | None:
@@ -99,7 +113,7 @@ def validate_skill(skill_dir: Path) -> tuple[bool, str]:
 
 
 def remove_existing(path: Path) -> None:
-    """Best-effort removal of an existing file, symlink, or empty/non-empty dir."""
+    """Best-effort removal of an existing file, symlink, or dir."""
     if not path.exists() and not path.is_symlink():
         return
     if path.is_symlink() or path.is_file():
@@ -109,10 +123,7 @@ def remove_existing(path: Path) -> None:
         if IS_WINDOWS:
             subprocess.run(["cmd", "/c", "rmdir", str(path)],
                            check=False, capture_output=True)
-            if path.exists():
-                shutil.rmtree(path, ignore_errors=True)
-        else:
-            shutil.rmtree(path)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _decode(data: bytes) -> str:
@@ -214,15 +225,42 @@ def uninstall_one(target_dir: Path, name: str) -> tuple[bool, str]:
     return True, "removed"
 
 
-def run(args: argparse.Namespace) -> int:
-    target = Path(args.path).expanduser().resolve() if args.path else DEFAULT_TARGET
+def warn_misplaced() -> None:
+    """If a skill was dropped directly under skills/ (not in win/ or linux/),
+    tell the user where it should go."""
+    if not SKILLS_DIR.is_dir():
+        return
+    for p in SKILLS_DIR.iterdir():
+        if not p.is_dir():
+            continue
+        if p.name in SUPPORTED_PLATFORMS:
+            continue
+        if (p / "SKILL.md").is_file():
+            warn(f"misplaced skill: {p.name}/SKILL.md lives outside a platform "
+                 f"subdir. Move it to skills/{current_platform()}/{p.name}/.")
 
-    skills = discover_skills()
+
+def run(args: argparse.Namespace) -> int:
+    platform = args.platform
+    if platform not in SUPPORTED_PLATFORMS:
+        error(f"unsupported --platform `{platform}`; expected one of: "
+              f"{', '.join(SUPPORTED_PLATFORMS)}")
+        return 1
+
+    actual = current_platform()
+    if platform != actual:
+        warn(f"using --platform {platform} (current OS is {actual})")
+
+    target = Path(args.path).expanduser().resolve() if args.path else DEFAULT_TARGET
+    skills = discover_skills(platform)
+    warn_misplaced()
+
     if args.list:
+        info(f"platform: {platform}  source: {platform_skills_dir(platform)}")
         if not skills:
-            skip(f"no skills found under {SKILLS_DIR}")
+            skip(f"no skills found under {platform_skills_dir(platform)}")
             return 0
-        info(f"found {len(skills)} skill(s) under {SKILLS_DIR}:")
+        info(f"found {len(skills)} skill(s):")
         for s in skills:
             ok, msg = validate_skill(s)
             tag = colorize(s.name, GREEN) if ok else colorize(s.name, YELLOW)
@@ -245,7 +283,7 @@ def run(args: argparse.Namespace) -> int:
         return 0 if failures == 0 else 1
 
     if not skills:
-        error(f"no skills found under {SKILLS_DIR}")
+        error(f"no skills found under {platform_skills_dir(platform)}")
         return 1
 
     selected = skills
@@ -253,14 +291,15 @@ def run(args: argparse.Namespace) -> int:
         wanted = set(args.skills)
         selected = [s for s in skills if s.name in wanted]
         for m in sorted(wanted - {s.name for s in selected}):
-            warn(f"requested skill not found: {m}")
+            warn(f"requested skill not found in platform {platform}: {m}")
 
     if not selected:
         error("nothing to install")
         return 1
 
     mode = "copy" if args.copy else "link"
-    info(f"installing {len(selected)} skill(s) into {target} (mode: {mode})")
+    info(f"installing {len(selected)} skill(s) into {target} "
+         f"(platform: {platform}, mode: {mode})")
 
     failures = 0
     warnings = 0
@@ -295,14 +334,17 @@ def build_parser() -> argparse.ArgumentParser:
                "  python install.py\n"
                "  python install.py i-have-adhd\n"
                "  python install.py --copy --path ./test-skills\n"
+               "  python install.py --platform linux --list\n"
                "  python install.py --uninstall i-have-adhd\n",
     )
     p.add_argument("skills", nargs="*",
-                   help="specific skill names to install (default: all)")
+                   help="specific skill names to install (default: all for current platform)")
     p.add_argument("--copy", action="store_true",
                    help="copy skill directories instead of symlinking")
     p.add_argument("--path", metavar="DIR",
                    help=f"install into DIR (default: {DEFAULT_TARGET})")
+    p.add_argument("--platform", choices=SUPPORTED_PLATFORMS, default=current_platform(),
+                   help=f"target platform subdir (default: {current_platform()})")
     p.add_argument("--uninstall", action="store_true",
                    help="remove installed skills; with names, only those")
     p.add_argument("--list", action="store_true",
