@@ -28,6 +28,16 @@ DEFAULT_TARGET = Path.home() / ".claude" / "skills"
 
 IS_WINDOWS = os.name == "nt"
 
+# Force UTF-8 I/O so error messages from Windows system calls (which arrive
+# in the system codepage) render correctly regardless of the terminal.
+if IS_WINDOWS:
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError):
+        pass
+
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
@@ -105,16 +115,29 @@ def remove_existing(path: Path) -> None:
             shutil.rmtree(path)
 
 
+def _decode(data: bytes) -> str:
+    if not data:
+        return ""
+    for enc in ("utf-8", "gbk", "mbcs"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def symlink_windows(source: Path, target: Path) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["cmd", "/c", "mklink", "/D", str(target), str(source)],
-            capture_output=True, text=True,
+            capture_output=True,
         )
     except (OSError, subprocess.SubprocessError) as e:
         return False, f"mklink failed: {e}"
     if result.returncode != 0:
-        return False, (result.stderr or result.stdout).strip() or "mklink exit nonzero"
+        stderr = _decode(result.stderr).strip()
+        stdout = _decode(result.stdout).strip()
+        return False, stderr or stdout or "mklink exit nonzero"
     return True, ""
 
 
